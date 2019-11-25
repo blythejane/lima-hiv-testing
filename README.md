@@ -16,7 +16,7 @@ who are considering whether or not to adopt this strategy.
 
 # Manuscript [under development]
 
-## Title: Finding Early Stage HIV Infections in a Hot Epidemic: A Cost-Effectiveness Analysis of The Sabes Study in Lima, Peru
+## Finding Early Stage HIV Infections in a Hot Epidemic: A Cost-Effectiveness Analysis of The Sabes Study in Lima, Peru
 
 ### Authors
 Blythe J.S. Adamson, PhD, MPHa,b,c, Angela Ulrich, PhD, MPHb,d, Enrique M. Saldarriaga, MSa, Robert De La Greccaf,g, Daniel Wood, PhDb, Joseph B. Babigumira, PhD, MS, MBChBa,d, Jorge L. Sanchez, MD, MPHg, Javier R. Lama, MD, MPHh, Dobromir Dimitrov, PhDb,e, Ann Duerr, MD, PhDb,d
