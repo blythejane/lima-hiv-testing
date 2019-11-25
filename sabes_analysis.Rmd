@@ -1,0 +1,668 @@
+---
+title: "SABES Cost-Effectiveness Analysis"
+author: "Blythe Adamson"
+date: "8/16/2018"
+output: 
+  html_document:
+    theme: yeti
+    highlight: tango
+    toc: true
+    toc_float: true
+---
+
+__Date created:__ `r format(Sys.time(), '%d %B, %Y')`
+
+__Project:__ The SABES Study
+
+__Repository:__ https://github.com/blythejane/lima-hiv-testing
+
+```{r global_options, include = FALSE}
+
+knitr::opts_chunk$set(fig.width = 9,
+                      fig.height = 4,
+                      echo = FALSE,
+                      warning = FALSE,
+                      message = FALSE,
+                      tidy = FALSE)
+```
+
+```{r libraries}
+
+library(ggplot2)
+library(dplyr)
+library(knitr)
+library(rmarkdown)
+library(htmlTable)
+```
+
+***
+# Overview
+***
+
+The purpose of this analysis is to estimate the cost-effectiveness of the Sabes program compared 
+to the standard of care from the perspective of the Peruvian Ministry of Health. We will evaluate 
+the cost of a testing program that incorporates the Sabes strategy, the effectiveness of the program 
+by estimating the proportion of cases of HIV detected during the acute/recent phase of infection, 
+and the proportion of individuals with new HIV diagnoses successfully linked to care through the 
+peer navigation program. This project will aid Peruvian policy makers in assessing the economic 
+impact of implementing the Sabes approach of frequent HIV testing and rapid linkage to HIV care 
+through the peer navigators. It provides evidence for decision makers as they decide whether 
+or not to adopt this strategy.
+
+
+### __Authors and affiliations__
+Blythe J.S. Adamson, PhD, MPH [a,b,c], Angela Ulrich, PhD, MPH [b,d], Enrique M. Saldarriaga, MS [a], Robert De La Grecca [f,g], Daniel Wood, PhD [b], Joseph B. Babigumira, PhD, MS, MBChB [a,d], Jorge L. Sanchez, MD, MPH [g], Javier R. Lama, MD, MPH [h], Dobromir Dimitrov, PhD [b,e], Ann Duerr, MD, PhD [b,d]
+
+a The Comparative Health Outcomes, Policy, & Economics (CHOICE) Institute, University of Washington, Seattle, WA, USA
+
+b Vaccine and Infectious Disease Division, Fred Hutchinson Cancer Research Center, Seattle, WA
+
+c Flatiron Health, New York, NY
+
+d Department of Global Health, University of Washington, Seattle, WA, USA
+
+e Department of Applied Mathematics, University of Washington, Seattle, WA, USA
+
+f HIV Vaccine Trials Network, Fred Hutchinson Cancer Research Center, Seattle, WA, USA
+
+g Centro de Investigaciones Tecnologicas Biomedicas y Medioambientales, Universidad Nacional Mayor de San Marcos, Lima, Perú
+
+h Asociación Civil Impacta Salud y Educación, Lima, Perú
+
+
+***
+# Model
+***
+
+### Naming Conventions
+
+`lima_` is the prefix for the dynamic trace
+
+`trt` is an indicator for the scenario (includes ref, int, ref2, int2...)
+
+`lima_trt` : generic data frame of dynamic output with "trt" representing either reference group 
+("ref") or intervention group ("int")
+
+`lima_ref` : reference group (control) in the base case analysis
+
+`lima_int` : SABES intervention in the base case analysis
+
+`lima_trt_ly` : trace with person-time in quarters, to sum for life years
+
+`lima_trt_qaly` : trace with quarterly discounted qalys, to sum for total discounted qalys
+
+
+```{r select_scenario, echo=FALSE}
+
+main_analysis <- TRUE # if FALSE then runs with the base2 and int2 for sensitivity 
+#                       analysis assuming an alternative HIV care cascade
+
+# LOAD DYANAMIC MODEL SIMULATION OUTPUT
+if(main_analysis){
+  lima_ref <- read.csv("lima_base.csv")
+  lima_int <- read.csv("lima_int.csv")
+}else{
+  lima_ref <- read.csv("lima_base2.csv")
+  lima_int <- read.csv("lima_int2.csv")
+}
+
+cpi <- read.csv("cpi.csv") # consumer price index for peru
+```
+
+
+```{r population size, echo = FALSE}
+
+# TIME HORIZON
+t_start <- min(lima_ref$Time) # start year of simulations (calibration 2004-2014)
+t_end <- max(lima_ref$Time) # end year of time horizon
+
+# POPULATION SIZE  -------------------------------------------------------------
+
+PopSize <- function(hiv_trt){
+  hiv_trt <- hiv_trt[hiv_trt$Time >= 2018,]
+  hiv_trt[,1] <- as.character(hiv_trt[,1])
+  hiv_trt[,3] <- as.numeric(hiv_trt[,3])
+  hiv_trt$AcuteDx <- NA
+  hiv_trt$AcuteDx[1] <- 0
+  hiv_trt$RegularDx <- NA
+  hiv_trt$RegularDx[1] <- 0
+  for(i in 2:81){
+    hiv_trt$AcuteDx[i] <- hiv_trt$NewD1[i] - hiv_trt$NewD1[i-1]
+    hiv_trt$RegularDx[i] <- rowSums(hiv_trt[i,58:61]) - rowSums(hiv_trt[c(i-1),58:61])
+  }
+  hiv_trt$popsize <- rowSums(hiv_trt[,3:54]) # sum the popsize at each time point
+  hiv_trt$infected <- rowSums(hiv_trt[,5:54])
+  hiv_trt$pAcuteInf <- (hiv_trt$I1L + hiv_trt$I1H)/hiv_trt$infected
+  return(hiv_trt)
+}
+
+lima_ref <- PopSize(lima_ref)
+lima_int <- PopSize(lima_int)
+
+popsize_min <- min(lima_ref$popsize)
+popsize_max <- max(lima_ref$popsize)
+
+```
+
+<br>
+
+## Parameters
+
+```{r params}
+
+pp_n <- round(lima_ref$popsize[lima_ref$Time == 2018]) # denominator for per person totals
+
+discount <- 0.03
+threshold <- 6572 # 2017 GDP for Peru from World Bank
+
+uAcute <- 0.690     # se: 0.058; unknown utility, assume same as <350
+u500   <- 0.730     # se: 0.052 
+u350   <- 0.710     # se: 0.059
+u200   <- 0.690     # se: 0.058
+uAIDS  <- 0.690     # se: 0.058
+# Sources: Review by Whitham 2016 & CDC Report 16 2014 (CDC Medical Monitoring Project)
+
+cAcuteDx <- 6412.42 # does acute infection have a cost? what is it?
+  # calculated from Angie Ulrich TreeAge costing model on 4/13/18
+  #To see if the model results are consistent with the trial, we simulated on a cohort size of 2,084.
+  #The current model estimates the following:
+  #  Incident cases: 259
+  #Detected during acute HIV infection: 234 (90%)
+  #Total Cost: $1,500,508
+  #Cost per acute infection diagnosed: $6,412.42
+
+        # cAcuteDx <- 23437.42 # one-way sensitivity analysis
+```
+
+The cost of an acute infection is assumed to be `r scales::dollar(cAcuteDx)` per additional 
+infection diagnosed. We assume a cost-effectiveness threshold of `r scales::dollar(threshold)` per QALY gained 
+(1xGDP per capita for Lima in 2017).
+
+<br>
+
+
+## Study Population
+
+The dynamic transmission model begins in the year `r t_start` and ends in the year `r t_end`.
+The calibration period takes place between the years 2004-2017, and these results are excluded from the analysis. The intervention period begins in 2018. 
+The population size fluxuates between `r scales::comma(popsize_min, digits = 0)` - `r scales::comma(popsize_max, digits = 0)` people during these years. 
+
+```{r describe study population}
+
+TableDescribe <- function(hiv_ref, hiv_trt){
+  
+  Indicator <- c(
+    "Population Size, 2018",
+    'Population Size, 2038',
+    "HIV Infections in 2018",
+    "HIV Infections in 2038",
+    "Incident Infections 2018-2038",
+    "HIV Prevalence (%) in 2018",
+    "HIV Prevalence (%) in 2038",
+    "Acute Fraction of HIV (%) in 2018",
+    "Acute Fraction of HIV (%) in 2038"
+  )
+  
+  Reference <- c(
+    round(hiv_ref$popsize[hiv_ref$Time == 2018]),
+    round(hiv_ref$popsize[hiv_ref$Time == 2038]),
+    round(hiv_ref$infected[hiv_ref$Time == 2018]),
+    round(hiv_ref$infected[hiv_ref$Time == 2038]),
+    round(hiv_ref$NewI[hiv_ref$Time == 2038]-hiv_ref$NewI[hiv_ref$Time == 2018]),
+    round(hiv_ref$infected[hiv_ref$Time == 2018]/hiv_ref$popsize[hiv_ref$Time == 2018], digits = 3),
+    round(hiv_ref$infected[hiv_ref$Time == 2038]/hiv_ref$popsize[hiv_ref$Time == 2038], digits = 3),
+    round((hiv_ref$I1L[hiv_ref$Time == 2018]+hiv_ref$I1H[hiv_ref$Time == 2018])/hiv_ref$infected[hiv_ref$Time == 2018], digits = 3),
+    round((hiv_ref$I1L[hiv_ref$Time == 2038]+hiv_ref$I1H[hiv_ref$Time == 2038])/hiv_ref$infected[hiv_ref$Time == 2038], digits = 3)
+  )
+  
+  Intervention <- c(
+    round(hiv_trt$popsize[hiv_trt$Time == 2018]),
+    round(hiv_trt$popsize[hiv_trt$Time == 2038]),
+    round(hiv_trt$infected[hiv_trt$Time == 2018]),
+    round(hiv_trt$infected[hiv_trt$Time == 2038]),
+    round(hiv_trt$NewI[hiv_ref$Time == 2038]-hiv_ref$NewI[hiv_trt$Time == 2018]),
+    round(hiv_trt$infected[hiv_trt$Time == 2018]/hiv_trt$popsize[hiv_trt$Time == 2018], digits = 3),
+    round(hiv_trt$infected[hiv_trt$Time == 2038]/hiv_trt$popsize[hiv_trt$Time == 2038], digits = 3),
+    round((hiv_trt$I1L[hiv_trt$Time == 2018]+hiv_trt$I1H[hiv_trt$Time == 2018])/hiv_trt$infected[hiv_trt$Time == 2018], digits = 3),
+    round((hiv_trt$I1L[hiv_trt$Time == 2038]+hiv_trt$I1H[hiv_trt$Time == 2038])/hiv_trt$infected[hiv_trt$Time == 2038], digits = 3)
+  )
+  
+  table_describe <- as.data.frame(cbind(Indicator, Reference, Intervention))
+  
+}
+table_describe <- TableDescribe(lima_ref, lima_int)
+
+```
+
+<br>
+
+## Health States 
+
+```{r health states}
+# HEALTH STATES
+state_names <- colnames(lima_ref[,3:56])
+
+states_n <- n_distinct(state_names)
+
+DefineStates <- function(state_names){
+  # Define the attributes of each model health state for the cost-effectiveness analysis
+  #
+  # Args:
+  #     @state_names: vector of character string short names for each health state in the model
+  #
+  # Returns:
+  #     Table of health state names and corresponding HIV status, awareness, CD4-count, risk level, and ART use
+  
+  st <- data.frame(state_names)
+  
+  st$state <- as.character(st$state_names)
+  
+  # HIV infection status
+  st$hiv[5:54] <- "infected"
+  st$hiv[1:4] <- "susceptible"
+  
+  # phase of the HIV care cascade
+  # I: Infected, D: Diagnosed, E: Enaged (not on ART), U: Unsuppressed and ON ART, T: Suppressed and on ART
+  st$aware <- NA
+  st$aware[1:4] <- "S"       # Susceptible
+  st$aware[5:14] <- "I"      # Infected and unaware
+  st$aware[15:24] <- "D"     # Diagnosed
+  st$aware[25:34] <- "E"     # Enaged (not on ART)
+  st$aware[35:44] <- "U"     # Unsuppressed and ON ART
+  st$aware[45:54] <- "T"     # Suppressed and on ART
+  aware_labels <- unique(st$aware)
+  
+  # CD4 Count of 1: ACUTE, 2: >500 CD4, 3: 350-500 CD4, 4: 200-350, 5: <200
+  st$cd4_cat <- NA
+  temp <- c(seq(5,54,10),seq(6,54,10))
+  for(i in temp){
+    st$cd4_cat[i] <- 1
+    st$cd4[i] <- "Acute"
+  }
+  temp <- c(seq(7,54,10),seq(8,54,10))
+  for(i in temp){
+    st$cd4_cat[i] <- 2
+    st$cd4[i] <- ">500"
+  }
+  temp <- c(seq(9,54,10),seq(10,54,10))
+  for(i in temp){
+    st$cd4_cat[i] <- 3
+    st$cd4[i] <- "350-500"
+  }
+  temp <- c(seq(11,54,10),seq(12,54,10))
+  for(i in temp){
+    st$cd4_cat[i] <- 4
+    st$cd4[i] <- "200-349"
+  }
+  temp <- c(seq(13,54,10),seq(14,54,10))
+  for(i in temp){
+    st$cd4_cat[i] <- 5
+    st$cd4[i] <- "<200"
+  }
+  cd4_labels <- unique(st$cd4)
+  
+  # Risk level for low or high sexual activity
+  st$risk <- NA
+  temp <- c(seq(1,54,2)) # rows of low risk health states
+  for(i in temp){
+    st$risk[i] <- "low"
+  }
+  temp <- c(seq(2,54,2)) # rows of high risk health states
+  for(i in temp){
+    st$risk[i] <- "high"
+  }
+  
+  # Treatment with ART
+  st$art <- 0
+  st$art[st$care == 'Susceptible'] <- NA
+  st$art[st$aware=='U' | st$aware == 'T'] <- 1
+  
+  return(st)
+}
+
+states <- DefineStates(state_names)  # data frame with indicator variables
+
+save(states, file = "states.rda")
+
+aware_labels <- unique(na.omit(states$aware))
+
+cd4_labels <- unique(na.omit(states$cd4))
+
+UtilityWeights <- function(state){
+  # Assign utility weights to each health state
+  #
+  # Args:
+  #    @state: table of health state names and attributes
+  #
+  # Returns:
+  #    Table of health states used in argument with added column that has utility value
+  
+  st <- state
+  st$utility <- NA
+  st$utility[st$hiv == 'susceptible'] <- 1
+  st$utility[st$cd4 == 'Acute'] <- uAcute
+  st$utility[st$cd4 == '>500'] <- u500
+  st$utility[st$cd4 == '350-500'] <- u350
+  st$utility[st$cd4 == '200-349'] <- u200
+  st$utility[st$cd4 == '<200'] <- uAIDS
+  st$utility[st$aware == "T"] <- u500
+  return(st)
+}
+
+states <- UtilityWeights(states)
+htmlTable(states)
+```
+
+<br>
+
+***
+# Results
+***
+
+
+## Epidemic Impact
+
+Here we summarize the epidemic impact estimated by the dynamic tranmission model. 
+
+```{r summary of dynamic results}
+htmlTable(table_describe)
+```
+
+
+## Clinical Impact
+
+```{r estimate clinical impact}
+# FUNCTIONS FOR HEALTH OUTCOMES ------------------------------------------------------------
+
+GetPersonTime <- function(hiv_trt){
+  # Calculate the total population life years (LYs) in each health state for a given scenario
+  #     during the analysis time horizon
+  #
+  # Args:
+  #   @hiv_trt: table of life years in each heath state each quarter of analysis time horizon for a given scenario
+  #
+  # Returns: 
+  #   Table of total population life years in each health state for each quarter of the analysis time horizon
+  
+  ly <- hiv_trt[hiv_trt$Time >= 2018,]
+  
+  ly[3:54] <- ly[3:54]/4
+  
+  ly$totalLY <- rowSums(ly[,3:54])
+  
+  ly$nyr <- trunc(ly$Time, digits = 0)
+  
+  ly$nyr <- ly$nyr - 2018
+  
+  return(ly)
+}
+
+GetQALYs <- function(hiv_trt_ly){
+  # Calculate the discounted QALYs from life years (LYs)
+  #
+  # Args:
+  #   @hiv_trt_ly: table of life years in each heath state each quarter of analysis time horizon for a given scenario
+  #
+  # Returns: 
+  #   Table of discounted QALYs in each health state each quarter
+  
+  hiv_trt_qaly <- hiv_trt_ly
+  
+  hiv_trt_qaly[3:54] <- NA
+  
+  for(i in 1:nrow(hiv_trt_ly)){
+    
+    hiv_trt_qaly[i,3:54] <- hiv_trt_ly[i,3:54] * states$utility * (1/((1+discount)^hiv_trt_ly$nyr[i]))
+  }
+  
+  hiv_trt_qaly[hiv_trt_qaly$Time < 2018, 3:54] <- 0
+  
+  hiv_trt_qaly$totalQALY <- rowSums(hiv_trt_qaly[,3:54])
+  
+  return(hiv_trt_qaly)
+}
+
+# LIFE YEARS (LY)-------------------------------------------------------------
+lima_ref_ly <- GetPersonTime(lima_ref) 
+
+lima_int_ly <- GetPersonTime(lima_int)
+
+# QALYs discounted-------------------------------------------------------------
+lima_ref_qaly <- GetQALYs(lima_ref_ly)
+
+lima_int_qaly  <- GetQALYs(lima_int_ly)
+```
+
+We calculate the total life years (LYs) and quality-adjusted life years (QALYs).
+
+## Costs
+
+We convert all costs from 2011 soles to 2017 soles, then exchange to USD 2017 using the 
+consumer price index. 
+
+```{r cost functions}
+
+# FUNCTIONS FOR COSTS --------------------------------------------------------------------
+
+GetCostParams <- function(prob = FALSE, nsims, cAcuteDx, cpi = cpi, societal = FALSE){
+  # Generate the set of cost parameters and input values for the HIV cost-effectiveness 
+  #      analysis. Create probabilistic draws from the distribution of uncertainty around each cost. 
+  # 
+  # Arguments:
+  #   @prob: logical indicator of the simulation being deterministic or probabilistic
+  #   @nsims: number of simulations if probabilistic otherwise 1
+  #   @cAcuteDx: cost (US$) of acute diagnosis in the Sabes study
+  #   @cpi: table of consumer price index from loaded .csv file
+  #   @societal: logical indicator for the analysis perspective, default is payer
+  # 
+  # Returns: 
+  #     Dataframe with nsims number of values for each of the 64 cost parameters (2017 US$)
+  
+  cAcuteDx <- cAcuteDx   # THE COST OF DIAGNOSIS
+
+  # Note that "S/" means "soles"
+  # some parts of diagnosis are different with the SABES intervention
+  # no intervention diagnosis cost: regular testing costs + 1yr high personelle costs
+  # SABES acutes diagnosis cost: [SABES cost per acute diagnosed] + [SABES linkage to care] 
+  #     + 1 yr of high personelle costs
+  # SABES non-acute diagnosis: [previous testing to get them diagnosed] * 
+  #     (1-P(SABES_coverage|nonAcute)) + [linkage to care] + 1 yr of high personelle costs
+  
+  cRegularDx <- (
+    1467*cpi$X2016[1]/cpi$X2014[1] + # 2014 soles per HIV diagnosis in the control group
+    12.06*12*cpi$X2016[1]/cpi$X2014[1]  # USD 2014 (physician, nurse) personelle costs in first year
+    ) 
+  
+  # Cost based on level of engagment in care (2016 USD)
+  cTreat <- (
+    92.68*3*cpi$X2016[1]/cpi$X2010[1] + # quarterly cost of HIV treatment (inflated from 2010)
+    41.5*3*cpi$X2016[1]/cpi$X2015[1]  + # quarterly cost of labs during HIV treatment (>1 yr post-diagnosis)
+    4.62*3*cpi$X2016[1]/cpi$X2014[1] # personelle costs per quarter
+  )
+
+  # quarterly costs
+  # only U and T are on ART
+  c.SL   <- 0
+  c.SH    <- 0
+  c.SPL   <- 0
+  c.SPH <- 0
+  c.I1L <- 0
+  c.I1H <- 0
+  c.I2L <- 0
+  c.I2H <- 0
+  c.I3L <- 0
+  c.I3H <- 0
+  c.I4L <- 0
+  c.I4H <- 0
+  c.I5L <- 0
+  c.I5H <- 0
+  c.D1L <- 0
+  c.D1H <- 0
+  c.D2L <- 0
+  c.D2H <- 0
+  c.D3L <- 0
+  c.D3H <- 0
+  c.D4L <- 0
+  c.D4H <- 0
+  c.D5L <- 0
+  c.D5H <- 0
+  c.E1L <- 0
+  c.E1H <- 0
+  c.E2L <- 0
+  c.E2H <- 0
+  c.E3L <- 0
+  c.E3H <- 0
+  c.E4L <- 0
+  c.E4H <- 0
+  c.E5L <- 0
+  c.E5H <- 0
+  c.U1L <- cTreat
+  c.U1H <- cTreat
+  c.U2L <- cTreat
+  c.U2H <- cTreat
+  c.U3L <- cTreat
+  c.U3H <- cTreat
+  c.U4L <- cTreat
+  c.U4H <- cTreat
+  c.U5L <- cTreat
+  c.U5H <- cTreat
+  c.T1L <- cTreat
+  c.T1H <- cTreat
+  c.T2L <- cTreat
+  c.T2H <- cTreat
+  c.T3L <- cTreat
+  c.T3H <- cTreat
+  c.T4L <- cTreat
+  c.T4H <- cTreat
+  c.T5L <- cTreat
+  c.T5H <- cTreat
+  c.NewI  <- 0
+  c.NewA  <- 0
+  c.NewD1 <- 0
+  c.NewD2 <- 0
+  c.NewD3 <- 0
+  c.NewD4 <- 0
+  c.NewD5 <- 0
+  c.Deaths <- 0
+  c.AcuteDx <- cAcuteDx
+  c.RegularDx <- cRegularDx
+  
+  
+  for (i in 1: nsims){
+    
+    C <- c( c.SL[i], c.SH[i], c.SPL[i],c.SPH[i],
+            c.I1L[i], c.I1H[i], c.I2L[i], c.I2H[i], c.I3L[i], c.I3H[i], c.I4L[i], c.I4H[i], c.I5L[i], c.I5H[i], 
+            c.D1L[i], c.D1H[i], c.D2L[i], c.D2H[i], c.D3L[i], c.D3H[i], c.D4L[i], c.D4H[i], c.D5L[i], c.D5H[i], 
+            c.E1L[i], c.E1H[i], c.E2L[i], c.E2H[i], c.E3L[i], c.E3H[i], c.E4L[i], c.E4H[i], c.E5L[i], c.E5H[i], 
+            c.U1L[i], c.U1H[i], c.U2L[i], c.U2H[i], c.U3L[i], c.U3H[i], c.U4L[i], c.U4H[i], c.U5L[i], c.U5H[i], 
+            c.T1L[i], c.T1H[i], c.T2L[i], c.T2H[i], c.T3L[i], c.T3H[i], c.T4L[i], c.T4H[i], c.T5L[i], c.T5H[i], 
+            c.NewI[i], c.NewA[i], c.NewD1[i], c.NewD2[i], c.NewD3[i], c.NewD4[i], c.NewD5[i], c.Deaths[i], 
+            c.AcuteDx[i], c.RegularDx[i])
+  }
+  
+  return(as.matrix(C))
+}
+
+CostingCalc <- function(hiv_trt_ly, C){
+  # Apply costs to the health state outcomes from the dynamic transmission model
+  #
+  # Args:
+  #   @hiv_trt_ly: table with scenario life years in each health state for each quarter in analysis time horizon
+  #   @C: table of cost input parameters and values to apply to time in health states
+  #
+  # Returns: 
+  #   Table of costs for each health state each quarter of the analysis time horizon
+  
+  hiv_trt_cost <- hiv_trt_ly
+  
+  hiv_trt_cost[3:c(2+length(C))] <- NA
+  
+  for(i in 1:nrow(hiv_trt_ly)){
+    hiv_trt_cost[i,3:c(2+length(C))] <- hiv_trt_ly[i,3:c(2+length(C))] * C * (1/((1+discount)^hiv_trt_ly$nyr[i]))
+  }
+  
+  hiv_trt_cost$totalCostHIVcare <- rowSums(hiv_trt_cost[,5:54])
+  
+  hiv_trt_cost$totalCost <- rowSums(hiv_trt_cost[,3:c(2+length(C))])
+  
+  return(hiv_trt_cost)
+}
+
+# assign the cost parameter values for each health state
+C <- GetCostParams(prob = FALSE, nsims = 1, cpi = cpi, cAcuteDx = cAcuteDx, societal = FALSE)
+
+n_C_params <- length(C) # number of cost parameters used in the analysis
+
+lima_ref_cost <- CostingCalc(lima_ref_ly, C) # reference group costs
+
+lima_int_cost <- CostingCalc(lima_int_ly, C) # intervention costs
+```
+
+<br>
+
+# Cost-Effectiveness
+
+We apply a cost-effectiveness threshold of 3 x per capita gross domestic product for Peru in 2017.
+
+```{r cost effectiveness}
+# merge the reference group outcomes (.x) with the intervention outcomes (.y)
+
+ly <-  lima_ref_ly %>%
+  left_join(lima_int_ly, by = 'X') 
+
+qaly <- lima_ref_qaly %>%
+  left_join(lima_int_qaly, by = 'X')
+
+cost <-  lima_ref_cost %>%
+  left_join(lima_int_cost, by = 'X')
+
+result_cost <- cost %>%
+  summarise(outcome = "Cost",
+            total_ref = scales::dollar(sum(totalCost.x)),
+            total_int = scales::dollar(sum(totalCost.y)),
+            inc = scales::dollar(sum(totalCost.y) - sum(totalCost.x)),
+            total_ref_pp = scales::dollar(sum(totalCost.x)/pp_n),
+            total_int_pp = scales::dollar(sum(totalCost.y)/pp_n),
+            inc_pp = scales::dollar((sum(totalCost.y) - sum(totalCost.x))/pp_n)
+            )
+
+result_qaly <- qaly %>%
+  summarise(outcome = "QALYs",
+            total_ref = scales::comma(sum(totalQALY.x), digits = 0),
+            total_int = scales::comma(sum(totalQALY.y), digits = 0),
+            inc = scales::comma(sum(totalQALY.y) - sum(totalQALY.x), digits = 0),
+            total_ref_pp = round(sum(totalQALY.x)/pp_n, digits = 3),
+            total_int_pp = round(sum(totalQALY.y)/pp_n,  digits = 3),
+            inc_pp = round((sum(totalQALY.y) - sum(totalQALY.x))/pp_n,  digits = 3)
+            )
+
+result_infection <- qaly %>%
+  summarise(outcome = "HIV Infections",
+            total_ref = scales::comma(max(NewI.x) - min(NewI.x), digits = 0),
+            total_int = scales::comma(max(NewI.y) - min(NewI.y), digits = 0),
+            inc = scales::comma(max(NewI.y) - min(NewI.y) - (max(NewI.x) - min(NewI.x)), digits = 0),
+            total_ref_pp = scales::comma((max(NewI.x) - min(NewI.x))/pp_n, digits = 3),
+            total_int_pp = scales::comma((max(NewI.y) - min(NewI.y))/pp_n, digits = 3),
+            inc_pp = scales::comma((max(NewI.y) - min(NewI.y) - (max(NewI.x) - min(NewI.x)))/pp_n, digits = 3)
+            )
+
+results <- rbind(result_infection, result_qaly, result_cost)
+
+htmlTable(results)
+
+```
+
+
+```{r icer calc}
+icer <- (sum(cost$totalCost.y) - sum(cost$totalCost.x)) /
+                       (sum(qaly$totalQALY.y) - sum(qaly$totalQALY.x)
+                       )
+```
+
+<br>
+
+The incremental cost-effectiveness ratio (ICER) for the SABES program was `r scales::dollar(icer)` 
+per QALY gained. Given our assumed a cost-effectiveness threshold of `r scales::dollar(threshold)` 
+per QALY gained (1xGDP per capita for Lima in 2017), we found this intervention to be cost-effective. 
+
+<br>
