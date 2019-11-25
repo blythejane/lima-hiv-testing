@@ -2,9 +2,8 @@
 Peruvian Ministry of Health cost-effectiveness analysis of the Sabes program to identify acute HIV infections in Lima.
 
 ***
-# Overview
-***
 
+# Overview
 The purpose of this analysis is to estimate the cost-effectiveness of the Sabes program compared 
 to the standard of care from the perspective of the Peruvian Ministry of Health. We evaluate 
 the cost of a testing program that incorporates the Sabes strategy, the effectiveness of the program 
